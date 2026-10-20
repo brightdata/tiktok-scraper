@@ -92,6 +92,7 @@ jobs:
               *tiktok.com/*) continue ;;  # rate-limits runners; the weekly README run fetches these posts anyway
               *zendesk.com/*) continue ;;    # answers 403 to anything that is not a browser
               *mcp.brightdata.com/*) continue ;;  # carries a placeholder token; nothing to check without a real one
+              *api.brightdata.com/*) continue ;;  # API endpoints answer 401 without a key; the README blocks call them
               *github.com/brightdata/tiktok-scraper*) [ "$public" = "200" ] || continue ;;  # unreachable on a private fork
             esac
             code=$(curl -s -o /dev/null -L --retry 3 --max-time 30 -A "Mozilla/5.0" -w '%{http_code}' "$url" || echo 000)
