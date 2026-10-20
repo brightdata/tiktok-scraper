@@ -274,7 +274,9 @@ biteswithlily 11500000 https://www.tiktok.com/@biteswithlily/video/7598108209903
 
 ### Comments on a post
 
-One credit per comment, and `comments()` has no way to ask for fewer. Check
+One credit per comment, and `comments()` has no way to ask for fewer. It also
+gives up at 240 seconds by default, and a two-comment post once took 243, so
+pass `timeout=900`. Check
 `comment_count` on the post first: the TikTok post used elsewhere in this
 README has more than 5,000. The post below has two. To cap a big one, use raw
 HTTP with `limit_per_input`; 3 on a 344-comment post returned 3 rows.
@@ -284,7 +286,7 @@ from brightdata import SyncBrightDataClient
 
 with SyncBrightDataClient(auto_create_zones=False) as client:
     url = "https://www.tiktok.com/@cooking__alone/video/7565981443512339742"
-    comments = client.scrape.tiktok.comments(url).data
+    comments = client.scrape.tiktok.comments(url, timeout=900).data
     print(len(comments), "comments; first:", repr(comments[0]["comment_text"][:60]))
 ```
 

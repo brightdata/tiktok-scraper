@@ -323,7 +323,8 @@ jobs:
     # scheduled and manual runs on main only, and only in the main repository: a
     # push is never followed by a bot commit, a copy never diverges from the
     # original, and a manual run on a branch never tries to push main
-    if: always() && !cancelled() && github.event_name != 'push' && github.repository == 'brightdata/tiktok-scraper' && github.ref == 'refs/heads/main'
+    # `inputs.only` empty as well: one block passing is not the README verified.
+    if: always() && !cancelled() && github.event_name != 'push' && inputs.only == '' && github.repository == 'brightdata/tiktok-scraper' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
