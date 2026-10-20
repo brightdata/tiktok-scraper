@@ -1,0 +1,383 @@
+# The only workflow that calls the real API. Needs the BRIGHTDATA_API_TOKEN
+# secret and spends about one credit per post.
+#
+# Four ways it runs:
+#   on every push to main: one post from tiktok and the README's links, one
+#     credit and about five minutes, so a broken commit shows up at once.
+#     A newer push cancels a run still going for an older commit.
+#   by hand, from the Actions tab, to scrape whatever accounts you choose
+#   every day at 08:00 UTC except Monday: one post from tiktok, the async
+#     path, and the field table, about two credits
+#   every Monday at 08:00 UTC: the same, plus every code block in the README,
+#     about 35 credits and 30 minutes
+#
+# Every run also checks, for free and with no secret, that the newest Bright
+# Data CLI still accepts every CLI line in the README. Readers run `npx -p
+# @brightdata/cli`, which is always the newest release, while the jobs that hold
+# the secret run the version pinned in BDATA_CLI below. CLI 0.4.0 removed the
+# README's commands and only the Monday run noticed; this check sees it the
+# same day. When it warns about a new release, bump BDATA_CLI.
+#
+# A slow day at the API shows up as a red run. Rerun it before reading more
+# into it.
+#
+# The daily and Monday runs end by rewriting the "last verified" badge line at
+# the top of README.md with today's date, and committing it if it changed. Push
+# runs never do this, so your own push is never followed by a bot commit. Only
+# the main repository commits; a copy of the repository just runs the checks.
+name: Live check
+
+run-name: "${{ github.event.schedule == '0 8 * * 1' && 'Weekly check: does every README block still work?' || github.event_name == 'schedule' && 'Daily check: is anything broken?' || github.event_name == 'push' && format('Push check: {0}', github.event.head_commit.message) || format('Scrape {0}, {1} posts each', inputs.handles, inputs.limit) }}"
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 8 * * 0,2-6"  # daily smoke, every day except Monday
+    - cron: "0 8 * * 1"    # Monday: the whole README
+  workflow_dispatch:
+    inputs:
+      handles:
+        description: TikTok handles, separated by spaces. No @ needed.
+        default: tiktok khaby.lame
+      limit:
+        description: How many recent posts to fetch for each handle
+        default: "2"
+      validate:
+        description: Also run every README block, as the Monday run does
+        type: boolean
+        default: false
+      only:
+        description: Block numbers to run, comma separated, for a cheap check. Empty means all.
+        default: ""
+
+permissions:
+  contents: write  # the daily check commits the regenerated field table
+
+env:
+  BDATA_CLI: "0.4.0"  # pinned for the jobs that hold the API secret; bump after cli-syntax passes
+
+concurrency:
+  group: live-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}  # only the newest commit matters
+
+jobs:
+  scrape:
+    name: Fetch the posts and attach them to this run
+    runs-on: ubuntu-latest
+    timeout-minutes: 45  # fetch (discovery took 5 to 10 minutes live), async path, table; the README blocks have their own jobs
+    env:
+      BRIGHTDATA_API_TOKEN: ${{ secrets.BRIGHTDATA_API_TOKEN }}
+      # On the daily schedule there are no inputs, so fall back to one cheap post.
+      HANDLES: ${{ inputs.handles || 'tiktok' }}
+      LIMIT: ${{ inputs.limit || '1' }}
+      # the async path and the field table run on every scheduled run and on request
+      CHECK: ${{ github.event_name == 'schedule' || inputs.validate }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install the package
+        run: pip install -e .
+
+      - name: Do the README's links still resolve?
+        run: |
+          public=$(curl -s -o /dev/null -w '%{http_code}' https://github.com/brightdata/tiktok-scraper)
+          failed=0
+          for url in $(grep -ohE 'https?://[^ )>"`]+' README.md AGENTS.md | sed 's/[.,]$//' | sort -u); do
+            case "$url" in
+              *tiktok.com/*) continue ;;  # rate-limits runners; the weekly README run fetches these posts anyway
+              *zendesk.com/*) continue ;;    # answers 403 to anything that is not a browser
+              *mcp.brightdata.com/*) continue ;;  # carries a placeholder token; nothing to check without a real one
+              *github.com/brightdata/tiktok-scraper*) [ "$public" = "200" ] || continue ;;  # unreachable on a private fork
+            esac
+            code=$(curl -s -o /dev/null -L --retry 3 --max-time 30 -A "Mozilla/5.0" -w '%{http_code}' "$url" || echo 000)
+            if [ "$code" = "200" ]; then echo "200 $url"; else echo "::error::$code $url"; failed=1; fi
+          done
+          [ "$failed" = 0 ] || exit 1
+      - name: Fetch the posts from TikTok
+        run: |
+          test -n "$BRIGHTDATA_API_TOKEN" || {
+            echo "No API token. Add BRIGHTDATA_API_TOKEN under" >&2
+            echo "Settings, Secrets and variables, Actions, then start this again." >&2
+            exit 1
+          }
+          # One retry, only on an API timeout. A slow day is not a broken build.
+          set +e
+          python -m tiktok_scraper $HANDLES --limit "$LIMIT" 2>&1 | tee run.log
+          code=${PIPESTATUS[0]}
+          if [ "$code" != "0" ] && grep -q "timeout" run.log; then
+            echo "::warning::The API timed out. Waiting 30s and trying once more."
+            sleep 30
+            python -m tiktok_scraper $HANDLES --limit "$LIMIT" 2>&1 | tee run.log
+            code=${PIPESTATUS[0]}
+          fi
+          exit "$code"
+
+      - name: Show what was found
+        if: always()
+        run: |
+          set -o pipefail
+          test -f tiktok.json || exit 0
+          python - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import json
+
+          doc = json.load(open("tiktok.json"))
+          print(f"Run at {doc['generated_at']}\n")
+          print("| handle | posts | fields | newest post |")
+          print("| --- | --- | --- | --- |")
+          for entry in doc["handles"]:
+              posts = entry["posts"]
+              newest = max(posts, key=lambda p: p.get("create_time") or "", default=None)
+              print(
+                  f"| {entry['handle']} | {len(posts)} | {len(posts[0]) if posts else 0} "
+                  f"| {newest.get('url') if newest else '-'} |"
+              )
+          for entry in doc["handles"]:
+              if not entry["posts"]:
+                  continue
+              print(f"\n### {entry['handle']}\n")
+              print("| create_time | url | likes | comments |")
+              print("| --- | --- | --- | --- |")
+              for post in entry["posts"]:
+                  print(
+                      f"| {post.get('create_time')} | {post.get('url')} "
+                      f"| {post.get('digg_count')} | {post.get('comment_count')} |"
+                  )
+          first = next((p for e in doc["handles"] for p in e["posts"]), None)
+          if first:
+              print("\n<details><summary>First record in full</summary>\n")
+              print("```json")
+              print(json.dumps(first, indent=2, ensure_ascii=False))
+              print("```\n")
+              print("</details>")
+          PY
+
+      # The two daily checks. Discovery is already covered by the step above.
+      - name: Does the async trigger, status, fetch path still work?
+        if: env.CHECK == 'true'
+        run: |
+          python - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import time
+
+          from brightdata import SyncBrightDataClient
+
+          url = "https://www.tiktok.com/@tiktok/video/7680721699171601694"
+          with SyncBrightDataClient(auto_create_zones=False) as c:
+              job = c.scrape.tiktok.posts_trigger(url)
+              sid = job.snapshot_id
+              for _ in range(72):  # up to 6 minutes
+                  status = c.scrape.tiktok.posts_status(sid)
+                  if status in ("ready", "failed", "canceled"):
+                      break
+                  time.sleep(5)
+              assert status == "ready", f"snapshot {sid} ended as {status}"
+              rows = c.scrape.tiktok.posts_fetch(sid)
+              rows = rows if isinstance(rows, list) else [rows]
+              assert rows and rows[0].get("url"), "fetch returned no record"
+          print(f"\nAsync path ok: trigger, status, fetch returned {len(rows)} record(s).")
+          PY
+
+      - name: Regenerate the README field table from the live schema
+        if: always() && env.CHECK == 'true' && github.repository == 'brightdata/tiktok-scraper' && github.ref == 'refs/heads/main'
+        run: |
+          python - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import json
+          import pathlib
+          import re
+
+          from brightdata import SyncBrightDataClient
+
+          readme = pathlib.Path("README.md")
+          text = readme.read_text(encoding="utf-8")
+          start, end = "<!-- fields:start -->", "<!-- fields:end -->"
+          assert start in text and end in text, "README field-table markers are missing"
+
+          with SyncBrightDataClient(auto_create_zones=False) as c:
+              fields = c.datasets.tiktok_posts.get_metadata().fields
+          sample = json.load(open("examples/sample_output.json"))["handles"][0]["posts"][0]
+
+          rows = ["| field | type | description |", "| --- | --- | --- |"]
+          for name, spec in fields.items():
+              desc = (spec.description or "").replace(" — ", ": ").replace("—", ":")
+              desc = " ".join(desc.split()).replace("`", "'").replace("|", "/")  # no fences, no table breaks
+              rows.append(f"| `{name}` | {spec.type} | {desc} |")
+          block = "\n".join([
+              start,
+              "<details>",
+              f"<summary>All {len(fields)} fields, with type and description</summary>",
+              "",
+              "Regenerated every day from the dataset schema, via",
+              "`client.datasets.tiktok_posts.get_metadata()`, so it cannot go stale. A",
+              f"post carries the fields that apply to it; the sample file has {len(sample)}",
+              f"of these {len(fields)}.",
+              "",
+              *rows,
+              "",
+              "</details>",
+              end,
+          ])
+          new = re.sub(re.escape(start) + r".*?" + re.escape(end), lambda _: block, text, flags=re.S)
+          readme.write_text(new, encoding="utf-8")
+          state = "updated" if new != text else "already current"
+          print(f"\nSchema: {len(fields)} fields. README table {state}.")
+          PY
+          if git diff --quiet README.md; then
+            echo "Nothing to commit."
+            exit 0
+          fi
+          # Never commit a README the tests would reject.
+          pip install -q -e ".[dev]" && pytest -q
+          git config user.name "anil-bd"
+          git config user.email "210667061+anil-bd@users.noreply.github.com"
+          git add README.md
+          git commit -m "Regenerate the field table from the live schema (automated daily check)"
+          git pull --rebase origin main
+          git push
+          echo "Committed the regenerated table."
+
+      - name: Attach tiktok.json so you can download it
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        if: always()
+        with:
+          name: tiktok-json
+          path: tiktok.json
+          if-no-files-found: warn
+
+  # Every code block in the README, each in its own job, all at once. Mondays,
+  # and on request. Wall clock is the slowest block, about five minutes,
+  # instead of the sum of all fourteen.
+  plan:
+    name: List the README blocks
+    if: github.event.schedule == '0 8 * * 1' || inputs.validate == true
+    runs-on: ubuntu-latest
+    outputs:
+      blocks: ${{ steps.list.outputs.blocks }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - id: list
+        env:
+          ONLY: ${{ inputs.only }}
+        run: python .github/scripts/readme_blocks.py list >> "$GITHUB_OUTPUT"
+
+  block:
+    name: "${{ matrix.n }}. ${{ matrix.title }}"
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 45  # a snippet waits up to 15 minutes, and gets one retry; past this is stuck
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.plan.outputs.blocks) }}
+    env:
+      BRIGHTDATA_API_TOKEN: ${{ secrets.BRIGHTDATA_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install the package and, for CLI blocks, the Bright Data CLI
+        env:
+          LANG_: ${{ matrix.lang }}
+        run: |
+          pip install -e .
+          if [ "$LANG_" = "bash" ]; then npm i -g "@brightdata/cli@$BDATA_CLI"; fi
+      - name: Run block ${{ matrix.n }} exactly as the README shows it
+        env:
+          N: ${{ matrix.n }}
+        run: |
+          set -o pipefail  # without this, tee's exit code hides a failing block
+          python .github/scripts/readme_blocks.py run "$N" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  cli-syntax:
+    name: Does the newest CLI still accept the README's commands?
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # no secret here on purpose: this job runs whatever npm calls latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install the newest CLI, as a reader's npx would
+        run: |
+          npm i -g @brightdata/cli@latest
+          latest=$(bdata --version)
+          echo "Newest CLI: $latest. Pinned for the live jobs: $BDATA_CLI."
+          if [ "$latest" != "$BDATA_CLI" ]; then
+            echo "::warning::@brightdata/cli $latest is out; the live jobs still pin $BDATA_CLI. Bump BDATA_CLI in live.yml once this job passes."
+          fi
+      - name: Run each README CLI line with a key the API rejects
+        env:
+          BDATA_CLI: ""  # use the newest, not the pin
+        run: |
+          set -o pipefail
+          python3 .github/scripts/readme_blocks.py cli-syntax | tee -a "$GITHUB_STEP_SUMMARY"
+
+  badge:
+    name: Put today's date on the README's "last verified" badge
+    needs: [scrape, plan, block, cli-syntax]
+    # scheduled and manual runs on main only, and only in the main repository: a
+    # push is never followed by a bot commit, a copy never diverges from the
+    # original, and a manual run on a branch never tries to push main
+    if: always() && !cancelled() && github.event_name != 'push' && github.repository == 'brightdata/tiktok-scraper' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Rewrite one badge line, commit only if it changed
+        env:
+          SCRAPE: ${{ needs.scrape.result }}
+          BLOCKS: ${{ needs.block.result }}  # skipped on the daily run, and that is fine
+          SYNTAX: ${{ needs.cli-syntax.result }}
+        run: |
+          if [ "$SCRAPE" = "success" ] && [ "$SYNTAX" = "success" ] && { [ "$BLOCKS" = "success" ] || [ "$BLOCKS" = "skipped" ]; }; then
+            label="last verified"; color="brightgreen"
+          else
+            label="last check failed"; color="red"
+          fi
+          today=$(date -u +'%-d %b %Y')
+          line="[![${label}](https://img.shields.io/badge/${label// /%20}-${today// /%20}-${color})](https://github.com/brightdata/tiktok-scraper/actions/workflows/live.yml) <!-- verified: rewritten by the daily run -->"
+          python3 - "$line" <<'PY'
+          import pathlib, re, sys
+          p = pathlib.Path("README.md"); t = p.read_text(encoding="utf-8")
+          new, n = re.subn(r"^\[!\[last [^\]]*\]\(https://img\.shields\.io/badge/[^)]*\)\]\([^)]*\) <!-- verified:[^\n]*$", sys.argv[1], t, count=1, flags=re.M)
+          if n != 1:
+              sys.exit("the badge line is missing from README.md")
+          p.write_text(new, encoding="utf-8")
+          PY
+          if git diff --quiet; then echo "badge already shows $today"; exit 0; fi
+          git config user.name "anil-bd"
+          git config user.email "210667061+anil-bd@users.noreply.github.com"
+          git commit -qam "${label^} $today (automated daily check)"
+          git pull -q --rebase origin main
+          git push -q origin main
+          echo "badge now shows: $label, $today"
+
+  # A red scheduled run used to show only as a red badge. Open one issue and keep
+  # adding to it, so a failure reaches the people watching the repository.
+  alert:
+    name: Open or update the live-check issue
+    needs: [scrape, block, cli-syntax]
+    if: failure() && github.event_name == 'schedule' && github.repository == 'brightdata/tiktok-scraper'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RESULTS: "scrape ${{ needs.scrape.result }}, README blocks ${{ needs.block.result }}, CLI syntax ${{ needs.cli-syntax.result }}"
+        run: |
+          title="Live check is failing"
+          body="$(date -u +'%-d %b %Y'): $RESULTS. $RUN"
+          n=$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[0].number')
+          if [ -n "$n" ]; then
+            gh issue comment "$n" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
