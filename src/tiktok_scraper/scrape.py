@@ -38,7 +38,8 @@ def clean_handle(handle: str) -> str:
     """Accept khaby.lame, @khaby.lame, or a profile URL. Reject anything else."""
     cleaned = (handle or "").strip().split("?", 1)[0].rstrip("/")
     if "tiktok.com/" in cleaned:
-        cleaned = cleaned.rsplit("/", 1)[-1]
+        # the @handle segment, so a video URL gives its creator, not the video ID
+        cleaned = next((part for part in cleaned.split("/") if part.startswith("@")), "")
     cleaned = cleaned.lstrip("@")
     if not _HANDLE.match(cleaned):
         raise ValueError(f"{handle!r} is not a TikTok handle")

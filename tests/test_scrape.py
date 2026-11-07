@@ -43,6 +43,10 @@ def test_clean_handle_takes_a_handle_an_at_sign_or_a_url():
     assert clean_handle("khaby.lame") == "khaby.lame"
     assert clean_handle("https://www.tiktok.com/@tiktok") == "tiktok"
     assert clean_handle("https://www.tiktok.com/@tiktok/?lang=en") == "tiktok"
+    video = "https://www.tiktok.com/@khaby.lame/video/7697307919943060767"
+    assert clean_handle(video) == "khaby.lame"
+    with pytest.raises(ValueError):
+        clean_handle("https://vm.tiktok.com/ZMabc123/")
     with pytest.raises(ValueError):
         clean_handle("not a handle")
 
