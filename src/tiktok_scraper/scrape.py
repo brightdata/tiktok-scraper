@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import SplitResult, urlsplit
 
 from brightdata import SyncBrightDataClient
 
@@ -34,12 +35,29 @@ EMPTY_WINDOW = "There are no public posts in the profile for the specified perio
 _HANDLE = re.compile(r"^[A-Za-z0-9._]{2,24}$")
 
 
+def _url_on(value: str, domain: str) -> SplitResult | None:
+    """value parsed as a URL, when its host is domain or a subdomain of it.
+
+    A substring test would let https://evil.com/tiktok.com/x through; the host is
+    what decides which site a URL names.
+    """
+    try:
+        url = urlsplit(value if "://" in value else f"https://{value}")
+        host = (url.hostname or "").lower()
+    except ValueError:
+        return None
+    return url if host == domain or host.endswith(f".{domain}") else None
+
+
 def clean_handle(handle: str) -> str:
     """Accept khaby.lame, @khaby.lame, or a profile URL. Reject anything else."""
     cleaned = (handle or "").strip().split("?", 1)[0].rstrip("/")
-    if "tiktok.com/" in cleaned:
+    if "/" in cleaned:
+        url = _url_on(cleaned, "tiktok.com")
+        if url is None:
+            raise ValueError(f"{handle!r} is not a TikTok handle")
         # the @handle segment, so a video URL gives its creator, not the video ID
-        cleaned = next((part for part in cleaned.split("/") if part.startswith("@")), "")
+        cleaned = next((part for part in url.path.split("/") if part.startswith("@")), "")
     cleaned = cleaned.lstrip("@")
     if not _HANDLE.match(cleaned):
         raise ValueError(f"{handle!r} is not a TikTok handle")
