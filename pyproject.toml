@@ -3,12 +3,23 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "tiktok-scraper"
-version = "0.1.0"
+name = "brightdata-tiktok-scraper"
+dynamic = ["version"]
 description = "TikTok scraper in Python: profiles, posts, comments and TikTok Shop products as JSON, on the Bright Data TikTok Scraper API. No TikTok login, no browser. 5,000 free credits a month."
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.10"
+authors = [{ name = "Bright Data" }]
+keywords = ["tiktok", "tiktok-scraper", "scraper", "web-scraping", "bright-data", "tiktok-api", "videos", "profiles", "comments"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Internet :: WWW/HTTP",
+]
 dependencies = ["brightdata-sdk>=2.5.2,<3", "rich>=13,<15"]
 
 [project.optional-dependencies]
@@ -19,6 +30,13 @@ tiktok-scraper = "tiktok_scraper.__main__:main"
 
 [project.urls]
 Homepage = "https://github.com/brightdata/tiktok-scraper"
+Documentation = "https://docs.brightdata.com/products/scrapers/tiktok/introduction"
+Source = "https://github.com/brightdata/tiktok-scraper"
+Issues = "https://github.com/brightdata/tiktok-scraper/issues"
+Changelog = "https://github.com/brightdata/tiktok-scraper/blob/main/CHANGELOG.md"
+
+[tool.hatch.version]
+path = "src/tiktok_scraper/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tiktok_scraper"]
