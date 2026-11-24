@@ -273,6 +273,9 @@ from brightdata import SyncBrightDataClient
 with SyncBrightDataClient(auto_create_zones=False) as client:
     result = client.search.tiktok.posts_by_keyword("street food", num_of_posts=2, timeout=900)
     for post in result.data:
+        if "error" in post:
+            print("error row:", post["error"])
+            continue
         print(post["account_id"], post["play_count"], post["url"])
 ```
 
@@ -329,7 +332,7 @@ def call(path, body=None):
         return json.load(response)
 
 
-product = "https://shop.tiktok.com/us/pdp/wireless-bluetooth-earphones-low-latency-gaming-gift/1732339489808880487"
+product = "https://shop.tiktok.com/us/pdp/the-ordinary-daily-hydration-bottle-practical-500ml-glass/1729507512389243913"
 job = call("/trigger?dataset_id=gd_m45m1u911dsa4274pi&include_errors=true", [{"url": product}])
 while call(f"/progress/{job['snapshot_id']}")["status"] not in ("ready", "failed"):
     time.sleep(10)
@@ -340,7 +343,7 @@ print(record["title"], record["final_price"], record["currency"], record["store_
 ```
 
 ```
-Wireless Bluetooth Earphones, Black TWS Gaming Headset 13.99 USD Saeme
+The Ordinary Daily Hydration Glass Bottle 19.99 USD The Ordinary Store
 ```
 
 Every other endpoint is the same `/trigger` call with a different dataset, a
@@ -563,10 +566,10 @@ bdata pipelines run gd_lkf2st302ap89utw5k collect_by_url "https://www.tiktok.com
 at the CLI's 600-second default.
 
 ```bash
-bdata pipelines run gd_m45m1u911dsa4274pi collect_by_url "https://shop.tiktok.com/us/pdp/wireless-bluetooth-earphones-low-latency-gaming-gift/1732339489808880487" --pretty
+bdata pipelines run gd_m45m1u911dsa4274pi collect_by_url "https://shop.tiktok.com/us/pdp/the-ordinary-daily-hydration-bottle-practical-500ml-glass/1729507512389243913" --pretty
 ```
 
-1 product, 44 fields, 2 minutes. Shop discovery works the same way with
+1 product, 49 fields, 15 seconds. Shop discovery works the same way with
 `discover_by_keyword --keyword`, `discover_by_category --category_url` or
 `discover_by_shop`, but took 18 to 20 minutes for two products, past the
 600-second default: add `--timeout 1500`, or `--async` and fetch later with
